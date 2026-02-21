@@ -1,25 +1,39 @@
 // ============================================
 // STRIPE CHECKOUT — Frontend Integration
 // ============================================
-// Talks to the Cloudflare Worker backend at:
-//   https://paygated-post-api.danielgolliher.workers.dev
 //
-// Flow:
-//   1. User clicks "Unlock" → POST /create-checkout-session → redirect to Stripe
-//   2. Stripe redirects back with ?session_id=cs_xxx
-//   3. Frontend calls GET /verify?session_id=cs_xxx → gets essay HTML
-//   4. Essay is injected into the page
+// Access persistence:
+//   1. After payment: stores signed token in localStorage
+//   2. On repeat visits: sends token to /verify-token for instant access
+//   3. Lost access: "Already purchased?" → enter email → magic link
 // ============================================
 
 const API_BASE = 'https://paygated-post-api.danielgolliher.workers.dev';
+const TOKEN_KEY = 'tvr_access_token';
 
-// ---- On page load: check for returning session ----
+// ---- On page load ----
 document.addEventListener('DOMContentLoaded', async () => {
     const params = new URLSearchParams(window.location.search);
-    const sessionId = params.get('session_id');
 
+    // Case 1: Returning from Stripe checkout
+    const sessionId = params.get('session_id');
     if (sessionId) {
-        await verifyAndUnlock(sessionId);
+        await verifyPaymentAndUnlock(sessionId);
+        return;
+    }
+
+    // Case 2: Arriving via magic link
+    const magicToken = params.get('token');
+    if (magicToken) {
+        await verifyTokenAndUnlock(magicToken, true);
+        return;
+    }
+
+    // Case 3: Repeat visit — check localStorage
+    const storedToken = localStorage.getItem(TOKEN_KEY);
+    if (storedToken) {
+        await verifyTokenAndUnlock(storedToken, false);
+        return;
     }
 });
 
@@ -44,53 +58,124 @@ async function handleCheckout() {
         }
     } catch (err) {
         console.error('Checkout error:', err);
-        btn.textContent = 'Unlock the Full Essay →';
+        btn.textContent = 'Unlock the Full Essay \u2192';
         btn.disabled = false;
         alert('Something went wrong. Please try again.');
     }
 }
 
-// ---- Verify payment and fetch essay content ----
-async function verifyAndUnlock(sessionId) {
+// ---- Verify Stripe payment and unlock ----
+async function verifyPaymentAndUnlock(sessionId) {
+    try {
+        const response = await fetch(`${API_BASE}/verify?session_id=${encodeURIComponent(sessionId)}`);
+        const data = await response.json();
+
+        if (!response.ok) throw new Error(data.error || 'Verification failed');
+
+        // Store the access token for future visits
+        if (data.token) {
+            localStorage.setItem(TOKEN_KEY, data.token);
+        }
+
+        showEssay(data.content, true);
+
+        // Clean the URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+
+    } catch (err) {
+        console.error('Payment verification error:', err);
+    }
+}
+
+// ---- Verify stored/magic token and unlock ----
+async function verifyTokenAndUnlock(token, isMagicLink) {
+    try {
+        const response = await fetch(`${API_BASE}/verify-token?token=${encodeURIComponent(token)}`);
+        const data = await response.json();
+
+        if (!response.ok) {
+            // Token invalid or expired — clear it
+            localStorage.removeItem(TOKEN_KEY);
+            return;
+        }
+
+        // Store/refresh the token
+        localStorage.setItem(TOKEN_KEY, token);
+
+        showEssay(data.content, isMagicLink);
+
+        // Clean the URL if from magic link
+        if (isMagicLink) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
+    } catch (err) {
+        console.error('Token verification error:', err);
+        localStorage.removeItem(TOKEN_KEY);
+    }
+}
+
+// ---- Show the essay ----
+function showEssay(content, showBanner) {
     const paywall = document.getElementById('paywall');
     const fullContent = document.getElementById('full-content');
     const essayBody = document.getElementById('essay-body');
     const successBanner = document.getElementById('success-banner');
 
+    if (paywall) paywall.style.display = 'none';
+
+    if (essayBody && content) {
+        essayBody.innerHTML = content;
+    }
+
+    if (fullContent) {
+        fullContent.style.display = 'block';
+        fullContent.style.opacity = '0';
+        fullContent.style.transition = 'opacity 0.8s ease';
+        requestAnimationFrame(() => {
+            fullContent.style.opacity = '1';
+        });
+    }
+
+    if (successBanner && showBanner) {
+        successBanner.style.display = 'block';
+    }
+}
+
+// ---- "Already purchased?" magic link flow ----
+async function requestMagicLink() {
+    const emailInput = document.getElementById('restore-email');
+    const statusEl = document.getElementById('restore-status');
+    const btn = document.getElementById('restore-btn');
+    const email = emailInput?.value?.trim();
+
+    if (!email) {
+        statusEl.textContent = 'Please enter your email.';
+        statusEl.style.color = 'var(--color-accent)';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    statusEl.textContent = '';
+
     try {
-        const response = await fetch(`${API_BASE}/verify?session_id=${encodeURIComponent(sessionId)}`);
-        const data = await response.json();
+        const response = await fetch(`${API_BASE}/resend-magic-link`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email }),
+        });
 
-        if (!response.ok) {
-            throw new Error(data.error || 'Verification failed');
-        }
-
-        // Payment verified — inject the essay content
-        if (paywall) paywall.style.display = 'none';
-
-        if (essayBody && data.content) {
-            essayBody.innerHTML = data.content;
-        }
-
-        if (fullContent) {
-            fullContent.style.display = 'block';
-            fullContent.style.opacity = '0';
-            fullContent.style.transition = 'opacity 0.8s ease';
-            requestAnimationFrame(() => {
-                fullContent.style.opacity = '1';
-            });
-        }
-
-        if (successBanner) {
-            successBanner.style.display = 'block';
-        }
-
-        // Clean the URL (remove session_id param)
-        const cleanUrl = window.location.pathname;
-        window.history.replaceState({}, document.title, cleanUrl);
+        // Always show success (don't reveal whether email exists)
+        statusEl.textContent = 'If that email has a purchase on file, a magic link has been sent. Check your inbox.';
+        statusEl.style.color = 'var(--color-success)';
+        btn.textContent = 'Sent!';
 
     } catch (err) {
-        console.error('Verification error:', err);
-        // If verification fails, keep showing the paywall
+        console.error('Magic link error:', err);
+        statusEl.textContent = 'Something went wrong. Please try again.';
+        statusEl.style.color = 'var(--color-accent)';
+        btn.textContent = 'Send Magic Link';
+        btn.disabled = false;
     }
 }

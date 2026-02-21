@@ -90,6 +90,22 @@
                 <p class="paywall-note">
                     Powered by Stripe. Secure checkout. No account required.
                 </p>
+
+                <div class="restore-access">
+                    <button class="restore-toggle" onclick="document.getElementById('restore-form').style.display='block'; this.style.display='none';">
+                        Already purchased? Restore access &darr;
+                    </button>
+                    <div id="restore-form" style="display: none;">
+                        <p class="restore-label">Enter the email you used at checkout:</p>
+                        <div class="restore-input-row">
+                            <input type="email" id="restore-email" placeholder="you@example.com" class="restore-input">
+                            <button id="restore-btn" class="btn btn-secondary" onclick="requestMagicLink()">
+                                Send Magic Link
+                            </button>
+                        </div>
+                        <p id="restore-status" class="restore-status"></p>
+                    </div>
+                </div>
             </div>
         </section>
 
