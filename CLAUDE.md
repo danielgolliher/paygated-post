@@ -29,13 +29,19 @@ The essay content lives **only** in the Cloudflare Worker (`src/worker.js`). The
 
 ## Worker Project
 
-The Cloudflare Worker source lives in a **separate local directory**: `/Users/danielgolliher/Development/paygated-post-worker/`
+The Cloudflare Worker source lives in a **separate repo/directory**: `/Users/danielgolliher/Development/paygated-post-worker/` (private repo: https://github.com/danielgolliher/paygated-post-worker)
 
 - `src/worker.js` — all backend logic + essay content
 - `wrangler.toml` — config (env vars for frontend URL, Stripe price ID)
 - Secrets (stored in Cloudflare, not in code): `STRIPE_SECRET_KEY`, `RESEND_API_KEY`
 
 Deploy the worker with: `cd ../paygated-post-worker && wrangler deploy`
+
+## Known Gotchas
+
+- **CORS**: The worker's `FRONTEND_URL` env var must be the **origin only** (`https://danielgolliher.github.io`), not including the path. The path is stored separately in `FRONTEND_PATH`.
+- **Stripe session list API**: Use `status=complete` (not `payment_status=paid`) when listing checkout sessions. The `customer_details` field is included by default on individual session retrieval but the list endpoint needs client-side email matching.
+- **Resend free tier**: The `onboarding@resend.dev` sender can only deliver to the email address associated with the Resend account. Verify a custom domain in Resend for production use.
 
 ## Key Config Values
 
