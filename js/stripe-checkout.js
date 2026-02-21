@@ -1,109 +1,96 @@
 // ============================================
-// STRIPE CHECKOUT INTEGRATION
+// STRIPE CHECKOUT — Frontend Integration
 // ============================================
+// Talks to the Cloudflare Worker backend at:
+//   https://paygated-post-api.danielgolliher.workers.dev
 //
-// SETUP REQUIRED:
-// 1. Replace STRIPE_PUBLISHABLE_KEY with your Stripe publishable key
-// 2. Replace STRIPE_PRICE_ID with a Price ID from your Stripe dashboard
-//    (create a product for $1.00, then copy the price ID, e.g. price_xxxxx)
-//
-// HOW IT WORKS:
-// - For a static site (GitHub Pages), we use Stripe Checkout in client-only mode
-// - User clicks "Unlock" → redirected to Stripe's hosted checkout page
-// - After payment → redirected back to post.html?session_id={CHECKOUT_SESSION_ID}
-// - We detect the session_id param and unlock the content
-//
-// IMPORTANT: This is a DEMO. In production, you would:
-// - Use a backend to create Checkout Sessions (more secure)
-// - Verify payment server-side before revealing content
-// - Store access tokens / user sessions
-// - Not embed the full content in the HTML (it's viewable in source)
-//
-// For a demo, this client-side approach works perfectly.
+// Flow:
+//   1. User clicks "Unlock" → POST /create-checkout-session → redirect to Stripe
+//   2. Stripe redirects back with ?session_id=cs_xxx
+//   3. Frontend calls GET /verify?session_id=cs_xxx → gets essay HTML
+//   4. Essay is injected into the page
 // ============================================
 
-// ---- CONFIGURATION ----
-// Replace these with your actual Stripe values:
-const STRIPE_PUBLISHABLE_KEY = 'pk_test_REPLACE_WITH_YOUR_KEY';
-const STRIPE_PRICE_ID = 'price_REPLACE_WITH_YOUR_PRICE_ID';
+const API_BASE = 'https://paygated-post-api.danielgolliher.workers.dev';
 
-// The URL where Stripe redirects after successful payment
-const SUCCESS_URL = window.location.origin + window.location.pathname + '?paid=true';
-const CANCEL_URL = window.location.origin + window.location.pathname;
-
-// ---- INITIALIZATION ----
-let stripe = null;
-try {
-    if (STRIPE_PUBLISHABLE_KEY !== 'pk_test_REPLACE_WITH_YOUR_KEY') {
-        stripe = Stripe(STRIPE_PUBLISHABLE_KEY);
-    }
-} catch (e) {
-    console.log('Stripe not initialized - using demo mode');
-}
-
-// ---- CHECK FOR PAYMENT SUCCESS ----
-document.addEventListener('DOMContentLoaded', () => {
+// ---- On page load: check for returning session ----
+document.addEventListener('DOMContentLoaded', async () => {
     const params = new URLSearchParams(window.location.search);
+    const sessionId = params.get('session_id');
 
-    if (params.get('paid') === 'true') {
-        unlockContent();
+    if (sessionId) {
+        await verifyAndUnlock(sessionId);
     }
 });
 
-// ---- CHECKOUT HANDLER ----
-function handleCheckout() {
-    // Demo mode: if Stripe isn't configured, just unlock the content
-    if (!stripe) {
-        console.log('Demo mode: Stripe not configured. Unlocking content for preview.');
+// ---- Checkout button handler ----
+async function handleCheckout() {
+    const btn = document.getElementById('checkout-btn');
+    btn.textContent = 'Redirecting to Stripe...';
+    btn.disabled = true;
 
-        // Show a demo notice then unlock
-        const paywall = document.getElementById('paywall');
-        if (paywall) {
-            const demoNotice = document.createElement('div');
-            demoNotice.className = 'demo-banner';
-            demoNotice.innerHTML = '<p>DEMO MODE: Stripe keys not configured yet. Showing content preview.</p>';
-            paywall.parentNode.insertBefore(demoNotice, paywall);
+    try {
+        const response = await fetch(`${API_BASE}/create-checkout-session`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+
+        const data = await response.json();
+
+        if (data.url) {
+            window.location.href = data.url;
+        } else {
+            throw new Error(data.error || 'Failed to create checkout session');
         }
-
-        setTimeout(() => unlockContent(), 500);
-        return;
+    } catch (err) {
+        console.error('Checkout error:', err);
+        btn.textContent = 'Unlock the Full Essay →';
+        btn.disabled = false;
+        alert('Something went wrong. Please try again.');
     }
-
-    // Real Stripe Checkout
-    stripe.redirectToCheckout({
-        lineItems: [{ price: STRIPE_PRICE_ID, quantity: 1 }],
-        mode: 'payment',
-        successUrl: SUCCESS_URL,
-        cancelUrl: CANCEL_URL,
-    }).then((result) => {
-        if (result.error) {
-            alert(result.error.message);
-        }
-    });
 }
 
-// ---- UNLOCK CONTENT ----
-function unlockContent() {
+// ---- Verify payment and fetch essay content ----
+async function verifyAndUnlock(sessionId) {
     const paywall = document.getElementById('paywall');
     const fullContent = document.getElementById('full-content');
+    const essayBody = document.getElementById('essay-body');
     const successBanner = document.getElementById('success-banner');
 
-    if (paywall) {
-        paywall.style.display = 'none';
-    }
-    if (fullContent) {
-        fullContent.style.display = 'block';
-        fullContent.style.opacity = '0';
-        fullContent.style.transition = 'opacity 0.8s ease';
-        requestAnimationFrame(() => {
-            fullContent.style.opacity = '1';
-        });
-    }
-    if (successBanner) {
-        // Only show the success banner if this was a real payment (not demo mode)
-        const params = new URLSearchParams(window.location.search);
-        if (params.get('paid') === 'true') {
+    try {
+        const response = await fetch(`${API_BASE}/verify?session_id=${encodeURIComponent(sessionId)}`);
+        const data = await response.json();
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Verification failed');
+        }
+
+        // Payment verified — inject the essay content
+        if (paywall) paywall.style.display = 'none';
+
+        if (essayBody && data.content) {
+            essayBody.innerHTML = data.content;
+        }
+
+        if (fullContent) {
+            fullContent.style.display = 'block';
+            fullContent.style.opacity = '0';
+            fullContent.style.transition = 'opacity 0.8s ease';
+            requestAnimationFrame(() => {
+                fullContent.style.opacity = '1';
+            });
+        }
+
+        if (successBanner) {
             successBanner.style.display = 'block';
         }
+
+        // Clean the URL (remove session_id param)
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, document.title, cleanUrl);
+
+    } catch (err) {
+        console.error('Verification error:', err);
+        // If verification fails, keep showing the paywall
     }
 }
